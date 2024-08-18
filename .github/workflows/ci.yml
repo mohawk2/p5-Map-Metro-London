@@ -1,0 +1,97 @@
+name: perl
+on:
+  push:
+    branches:
+      - '*'
+    tags-ignore:
+      - '*'
+  pull_request:
+jobs:
+  ubuntu:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        perl-version: ['5.10-buster', '5.14-buster', '5.20-buster']
+        include:
+          - perl-version: 'latest'
+            os: ubuntu-latest
+            release-test: true
+            coverage: true
+    container: perl:${{ matrix.perl-version }}
+    steps:
+      - uses: actions/checkout@v2
+      - run: |
+            export MYPERL=$(which perl)
+            [ -z "$MYPERL" ] && exit 1
+            echo "MYPERL=$MYPERL" >> $GITHUB_ENV
+            $MYPERL -V
+      - run: $MYPERL -S cpanm -n --with-configure --with-recommends --installdeps . || ( cat ~/.cpanm/build.log && false )
+      - name: Run release tests # before others as may install useful stuff
+        if: ${{ matrix.release-test }}
+        env:
+          RELEASE_TESTING: 1
+        run: |
+          $MYPERL -S cpanm -n --installdeps --with-develop . || ( cat ~/.cpanm/build.log && false )
+          prove -lr xt
+      - name: Run tests (no coverage)
+        if: ${{ !matrix.coverage }}
+        run: |
+            # force remake of Makefile/Build because --installdeps may have made incomplete
+            if [ -f Makefile.PL ]; then
+              $MYPERL Makefile.PL
+              ( make && make test ) || exit 1
+            elif [ -f Build.PL ]; then
+              $MYPERL Build.PL
+              ( $MYPERL Build test ) || exit 1
+            else
+              prove -l -j4 t # hope for best
+            fi
+      - name: Run tests (with coverage)
+        if: ${{ matrix.coverage }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $MYPERL -S cpanm -n Devel::Cover::Report::Coveralls || ( cat ~/.cpanm/build.log && false )
+          HARNESS_OPTIONS='j4' cover -test -report Coveralls
+  non-linux:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v2
+      - name: GNU make for Windows
+        shell: bash
+        if: ${{ matrix.os == 'windows-latest' }}
+        run: |
+          choco install --verbose make
+      - uses: shogo82148/actions-setup-perl@v1
+        with:
+          distribution: strawberry # ignored non-windows
+      - shell: bash
+        run: |
+            export MYPERL=$(which -a perl | grep -m 1 hostedtoolcache)
+            echo "MYPERL=$MYPERL" >> $GITHUB_ENV
+            [ -z "$MYPERL" ] && exit 1
+            $MYPERL -V
+      - uses: perl-actions/install-with-cpanm@v1
+        with:
+          args: -n --with-configure --installdeps .
+      - name: Run tests
+        shell: bash
+        run: |
+            # force remake of Makefile/Build because --installdeps may have made incomplete
+            if [ -f Makefile.PL ]; then
+              sudo make realclean || true # get rid of root-owned MYMETA.*
+              $MYPERL Makefile.PL
+              ( make && make test ) || exit 1
+            elif [ -f Build.PL ]; then
+              sudo $MYPERL Build realclean || true # get rid of root-owned MYMETA.*
+              $MYPERL Build.PL
+              ( $MYPERL Build test ) || exit 1
+            else
+              prove -l -j4 t # hope for best
+            fi
